@@ -1,31 +1,31 @@
 package ru.daniil4jk.ai.deltachat.connector;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import ru.daniil4jk.ai.deltachat.connector.jsonrpc.DeltachatRpcClient;
 import ru.daniil4jk.ai.deltachat.connector.mcp.DeltachatMcpServer;
-import ru.daniil4jk.ai.deltachat.connector.service.DeltachatService;
+import ru.daniil4jk.ai.deltachat.connector.service.DeltachatServiceImpl;
 
-/**
- * Точка входа в DeltachatMCP.
- * <p>
- * Запускает MCP-сервер на stdin/stdout транспорте.
- * MCP-клиент (агент) запускает этот JAR как подпроцесс.
- * <p>
- * TODO: собрать зависимости, имплементировать {@link DeltachatService},
- *       поднять {@code deltachat-rpc-server} через {@code DeltachatRpcClient}.
- */
+import java.util.concurrent.CountDownLatch;
+
 public class DeltachatMcpApplication {
+
+    private static final Logger log = LoggerFactory.getLogger(DeltachatMcpApplication.class);
 
     public static void main(String[] args) throws Exception {
         var objectMapper = new ObjectMapper();
 
-        // TODO: инициализировать DeltachatRpcClient, обернуть в DeltachatService
-        DeltachatService deltachatService = null;
+        var rpcClient = new DeltachatRpcClient(objectMapper);
+        rpcClient.start();
 
-        var server = new DeltachatMcpServer(deltachatService, objectMapper);
-        var mcpServer = server.create().build();
+        var service = new DeltachatServiceImpl(rpcClient, objectMapper);
+        service.init();
 
-        // MCP сервер через StdioServerTransportProvider уже слушает stdin.
-        // Просто ждём завершения.
-        Thread.currentThread().join();
+        log.info("Starting MCP server (stdio transport)");
+        var server = new DeltachatMcpServer(service, objectMapper);
+        server.create().build();
+
+        new CountDownLatch(1).await();
     }
 }

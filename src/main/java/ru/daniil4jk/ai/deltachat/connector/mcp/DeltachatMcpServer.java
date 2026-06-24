@@ -5,9 +5,9 @@ import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.server.McpServerFeatures;
 import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
-import ru.daniil4jk.ai.deltachat.connector.model.Chat;
-import ru.daniil4jk.ai.deltachat.connector.model.InputMessage;
-import ru.daniil4jk.ai.deltachat.connector.model.OutputMessage;
+import ru.daniil4jk.ai.deltachat.connector.model.FullChat;
+import ru.daniil4jk.ai.deltachat.connector.model.MessageData;
+import ru.daniil4jk.ai.deltachat.connector.model.MessageObject;
 
 import ru.daniil4jk.ai.deltachat.connector.service.DeltachatService;
 import ru.daniil4jk.ai.deltachat.connector.service.UnreadMessagesExistException;
@@ -15,24 +15,14 @@ import ru.daniil4jk.ai.deltachat.connector.service.UnreadMessagesExistException;
 import java.util.List;
 import java.util.Map;
 
-
-/**
- * MCP-сервер, который экспортирует инструменты для работы с DeltaChat.
- * <p>
- * Запускается как подпроцесс через {@link StdioServerTransportProvider} —
- * общается с MCP-клиентом (агентом) через stdin/stdout.
- */
 public class DeltachatMcpServer {
-
-    // ───── локальные рекорды для десериализации аргументов инструментов ─────
 
     private record ListChatsArgs(int listFlags, String query) {}
     private record GetMessagesArgs(int n) {}
     private record GetLastMessagesArgs(int chatId, int n) {}
     private record GetMessageArgs(int msgId) {}
-    private record SendMessageArgs(int chatId, InputMessage message) {}
-
-    // ───── зависимости ─────
+    private record SendMessageArgs(int chatId, MessageData message) {}
+    private record ImportBackupArgs(String backupPath, String passphrase) {}
 
     private final DeltachatService deltachatService;
     private final ObjectMapper objectMapper;
@@ -42,9 +32,6 @@ public class DeltachatMcpServer {
         this.objectMapper = objectMapper;
     }
 
-    /**
-     * Собрать и запустить MCP-сервер.
-     */
     public McpServer.SyncSpecification create() {
         var transport = new StdioServerTransportProvider(objectMapper);
 
@@ -54,6 +41,7 @@ public class DeltachatMcpServer {
                         .tools(true)
                         .build())
                 .tools(
+                        toolImportFromBackup(),
                         toolListChats(),
                         toolListUnreadChats(),
                         toolGetUnreadMessages(),
@@ -63,7 +51,40 @@ public class DeltachatMcpServer {
                 );
     }
 
-    // ───── инструменты ─────
+    private McpServerFeatures.SyncToolSpecification toolImportFromBackup() {
+        return new McpServerFeatures.SyncToolSpecification(
+                new McpSchema.Tool(
+                        "import_from_backup",
+                        "Import Delta Chat account from a .tar backup archive. " +
+                                "Must be called first if no accounts are configured.",
+                        new McpSchema.JsonSchema(
+                                "object",
+                                Map.of(
+                                        "backupPath", Map.of(
+                                                "type", "string",
+                                                "description", "Full path to the .tar backup archive"
+                                        ),
+                                        "passphrase", Map.of(
+                                                "type", "string",
+                                                "description", "Optional backup passphrase"
+                                        )
+                                ),
+                                List.of("backupPath"),
+                                false
+                        )
+                ),
+                (exchange, args) -> {
+                    var p = objectMapper.convertValue(args, ImportBackupArgs.class);
+                    int accountId = deltachatService.importFromBackup(
+                            p.backupPath(), p.passphrase());
+                    return new McpSchema.CallToolResult(List.of(
+                            new McpSchema.TextContent(
+                                    "Account imported, id=" + accountId +
+                                            ". Tools are now available.")
+                    ), false);
+                }
+        );
+    }
 
     private McpServerFeatures.SyncToolSpecification toolListChats() {
         return new McpServerFeatures.SyncToolSpecification(
@@ -89,7 +110,7 @@ public class DeltachatMcpServer {
                 ),
                 (exchange, args) -> {
                     var p = objectMapper.convertValue(args, ListChatsArgs.class);
-                    List<Chat> chats = deltachatService.listChats(p.listFlags(), p.query());
+                    List<FullChat> chats = deltachatService.listChats(p.listFlags(), p.query());
                     return new McpSchema.CallToolResult(List.of(
                             new McpSchema.TextContent(json(chats))
                     ), false);
@@ -105,7 +126,7 @@ public class DeltachatMcpServer {
                         new McpSchema.JsonSchema("object", Map.of(), List.of(), false)
                 ),
                 (exchange, args) -> {
-                    List<Chat> chats = deltachatService.listUnreadChats();
+                    List<FullChat> chats = deltachatService.listUnreadChats();
                     return new McpSchema.CallToolResult(List.of(
                             new McpSchema.TextContent(json(chats))
                     ), false);
@@ -133,7 +154,7 @@ public class DeltachatMcpServer {
                 ),
                 (exchange, args) -> {
                     var p = objectMapper.convertValue(args, GetMessagesArgs.class);
-                    List<OutputMessage> msgs = deltachatService.getUnreadMessages(p.n());
+                    List<MessageObject> msgs = deltachatService.getUnreadMessages(p.n());
                     return new McpSchema.CallToolResult(List.of(
                             new McpSchema.TextContent(json(msgs))
                     ), false);
@@ -167,7 +188,7 @@ public class DeltachatMcpServer {
                 (exchange, args) -> {
                     var p = objectMapper.convertValue(args, GetLastMessagesArgs.class);
                     try {
-                        List<OutputMessage> msgs = deltachatService.getLastMessages(p.chatId(), p.n());
+                        List<MessageObject> msgs = deltachatService.getLastMessages(p.chatId(), p.n());
                         return new McpSchema.CallToolResult(List.of(
                                 new McpSchema.TextContent(json(msgs))
                         ), false);
@@ -177,7 +198,7 @@ public class DeltachatMcpServer {
                                         "Error: " + e.getMessage() +
                                                 ". Call get_unread_messages first."
                                 )
-                        ), true); // isError=true
+                        ), true);
                     }
                 }
         );
@@ -202,7 +223,7 @@ public class DeltachatMcpServer {
                 ),
                 (exchange, args) -> {
                     var p = objectMapper.convertValue(args, GetMessageArgs.class);
-                    OutputMessage msg = deltachatService.getMessage(p.msgId());
+                    MessageObject msg = deltachatService.getMessage(p.msgId());
                     return new McpSchema.CallToolResult(List.of(
                             new McpSchema.TextContent(json(msg))
                     ), false);
@@ -214,9 +235,9 @@ public class DeltachatMcpServer {
         return new McpServerFeatures.SyncToolSpecification(
                 new McpSchema.Tool(
                         "send_message",
-                        "Send a message to a chat. Accepts an InputMessage (write-only) — " +
+                        "Send a message to a chat. Accepts a MessageData object — " +
                                 "send only the fields you want to set (text, file, html, " +
-                                "quotedMessageId, overrideSenderName, location, etc.).",
+                                "viewtype, quotedMessageId, overrideSenderName, location, etc.).",
                         new McpSchema.JsonSchema(
                                 "object",
                                 Map.of(
@@ -232,19 +253,20 @@ public class DeltachatMcpServer {
                                                                 "description", "Message text"),
                                                         "html", Map.of("type", "string",
                                                                 "description", "HTML version of text"),
+                                                        "viewtype", Map.of("type", "string",
+                                                                "description", "View type: Text, Image, Gif, Audio, Voice, Video, File, etc."),
                                                         "file", Map.of("type", "string",
                                                                 "description", "Path to file in blob directory"),
+                                                        "filename", Map.of("type", "string",
+                                                                "description", "Original filename"),
                                                         "quotedMessageId", Map.of("type", "integer",
                                                                 "description", "ID of the message to quote"),
                                                         "overrideSenderName", Map.of("type", "string",
                                                                 "description", "Override sender display name"),
                                                         "location", Map.of(
-                                                                "type", "object",
-                                                                "description", "Latitude/longitude",
-                                                                "properties", Map.of(
-                                                                        "latitude", Map.of("type", "number"),
-                                                                        "longitude", Map.of("type", "number")
-                                                                )
+                                                                "type", "array",
+                                                                "description", "Latitude/longitude as [lat, lng]",
+                                                                "items", Map.of("type", "number")
                                                         )
                                                 )
                                         )
@@ -262,8 +284,6 @@ public class DeltachatMcpServer {
                 }
         );
     }
-
-    // ───── утилиты ─────
 
     private String json(Object value) {
         try {
