@@ -8,7 +8,7 @@ import lombok.Data;
 public class MessageData {
     private String text;
     private String html;
-    private String viewtype;
+    private MessageViewtype viewtype;
     private String file;
     private String filename;
     private double[] location;

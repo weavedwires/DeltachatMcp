@@ -10,6 +10,7 @@ import ru.daniil4jk.ai.deltachat.connector.model.MessageData;
 import ru.daniil4jk.ai.deltachat.connector.model.MessageObject;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -32,6 +33,8 @@ public class DeltachatServiceImpl implements DeltachatService {
         if (selected != null && !selected.isNull()) {
             accountId = selected.asInt();
             log.info("Using selected account id={}", accountId);
+            rpc.call("start_io", accountId);
+            log.info("Started IO for account id={}", accountId);
             return;
         }
         // try first available account
@@ -39,6 +42,8 @@ public class DeltachatServiceImpl implements DeltachatService {
         if (all != null && all.isArray() && all.size() > 0) {
             accountId = all.get(0).asInt();
             log.info("Using first account id={}", accountId);
+            rpc.call("start_io", accountId);
+            log.info("Started IO for account id={}", accountId);
             return;
         }
         log.warn("No accounts found — call importFromBackup first");
@@ -78,36 +83,52 @@ public class DeltachatServiceImpl implements DeltachatService {
     public List<FullChat> listUnreadChats() {
         return listChats(0, null).stream()
                 .filter(c -> c.getFreshMessageCounter() > 0)
+                .sorted(Comparator.comparing(FullChat::getFreshMessageCounter))
                 .toList();
     }
 
     @Override
-    @SuppressWarnings("unchecked")
-    public List<MessageObject> getUnreadMessages(int n) {
+    public List<MessageObject> getUnreadMessages(int chatId, int n) {
         checkAccount();
+        // get all fresh message IDs across all chats
         JsonNode freshIds = rpc.call("get_fresh_msgs", accountId);
-        if (freshIds == null || !freshIds.isArray() || freshIds.size() == 0) {
+        if (freshIds == null || !freshIds.isArray() || freshIds.isEmpty()) {
             return List.of();
         }
-        List<Integer> take = new ArrayList<>();
-        for (int i = 0; i < Math.min(n, freshIds.size()); i++) {
-            take.add(freshIds.get(i).asInt());
+        // fetch all fresh messages in one batch
+        List<Integer> allFreshIds = new ArrayList<>();
+        for (JsonNode idNode : freshIds) {
+            allFreshIds.add(idNode.asInt());
         }
-        // batch fetch
-        JsonNode msgsMap = rpc.call("get_messages", accountId, take);
-        // mark as seen using the fetched IDs
-        rpc.call("markseen_msgs", accountId, take);
+        JsonNode msgsMap = rpc.call("get_messages", accountId, allFreshIds);
 
-        List<MessageObject> result = new ArrayList<>();
+        // filter by chatId, collect matching IDs and messages
+        List<Integer> matchedIds = new ArrayList<>();
+        List<MessageObject> matched = new ArrayList<>();
         if (msgsMap != null && msgsMap.isObject()) {
-            for (JsonNode msgNode : msgsMap) {
-                // each value in the map is a MessageLoadResult
-                JsonNode message = msgNode.get("message");
-                if (message != null && !message.isNull()) {
-                    result.add(mapper.convertValue(message, MessageObject.class));
+            var iter = msgsMap.fields();
+            while (iter.hasNext()) {
+                var entry = iter.next();
+                JsonNode loadResult = entry.getValue();
+                // MessageLoadResult is an internally-tagged enum with inlined fields:
+                // {"kind": "message", "id": ..., "chatId": ..., ...}
+                // — no "message" wrapper, fields are at the top level of loadResult
+                if (loadResult.has("kind") && "message".equals(loadResult.get("kind").asText())
+                        && loadResult.has("chatId")
+                        && loadResult.get("chatId").asInt() == chatId) {
+                    matched.add(mapper.convertValue(loadResult, MessageObject.class));
+                    matchedIds.add(Integer.parseInt(entry.getKey()));
                 }
             }
         }
+        if (matched.isEmpty()) {
+            return List.of();
+        }
+        // take first n and mark them seen
+        int takeCount = Math.min(n, matched.size());
+        List<Integer> takeIds = matchedIds.subList(0, takeCount);
+        List<MessageObject> result = matched.subList(0, takeCount);
+        rpc.call("markseen_msgs", accountId, takeIds);
         return result;
     }
 
@@ -122,7 +143,7 @@ public class DeltachatServiceImpl implements DeltachatService {
         }
         // get all message IDs for the chat
         JsonNode ids = rpc.call("get_message_ids", accountId, chatId, false, false);
-        if (ids == null || !ids.isArray() || ids.size() == 0) {
+        if (ids == null || !ids.isArray() || ids.isEmpty()) {
             return List.of();
         }
         int size = ids.size();
@@ -140,9 +161,10 @@ public class DeltachatServiceImpl implements DeltachatService {
             var iter = msgsMap.fields();
             while (iter.hasNext()) {
                 var entry = iter.next();
-                JsonNode message = entry.getValue().get("message");
-                if (message != null && !message.isNull()) {
-                    result.add(mapper.convertValue(message, MessageObject.class));
+                JsonNode loadResult = entry.getValue();
+                // MessageLoadResult internally tagged: {"kind": "message", ...}
+                if (loadResult.has("kind") && "message".equals(loadResult.get("kind").asText())) {
+                    result.add(mapper.convertValue(loadResult, MessageObject.class));
                 }
             }
         }

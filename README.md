@@ -31,10 +31,10 @@ MCP-клиент (OpenCode, Claude Desktop и т.д.) запускает это�
 
 | Инструмент | Описание |
 |---|---|
-| `import_from_backup` | Импорт аккаунта из `.bak` файла (`backupPath`, `passphrase?`) — обязателен при старте без аккаунтов |
+| `import_from_backup` | Импорт аккаунта из `.tar` бэкапа (`backupPath`, `passphrase?`) — обязателен при старте без аккаунтов |
 | `list_chats` | Список чатов (`listFlags`: 0=все, 9=архив, 512=без групп; `query` для поиска) |
 | `list_unread_chats` | Чаты с непрочитанными сообщениями |
-| `get_unread_messages` | Первые N непрочитанных сообщений (помечаются прочитанными) |
+| `get_unread_messages` | Первые N непрочитанных сообщений из чата (`chatId`, `n`, помечаются прочитанными) |
 | `get_last_messages` | Последние N сообщений из чата (`chatId`, `n`); ошибка если есть непрочитанные — сперва вызвать `get_unread_messages` |
 | `get_message` | Сообщение по ID |
 | `send_message` | Отправка сообщения (`chatId`, `message` с полями `text`, `html`, `file`, `viewtype`, `quotedMessageId`, `overrideSenderName`, `location`) |
@@ -44,8 +44,8 @@ MCP-клиент (OpenCode, Claude Desktop и т.д.) запускает это�
 1. Агент подключается → сервер проверяет наличие аккаунтов
 2. Если аккаунтов нет → агент вызывает `import_from_backup`
 3. После импорта доступны все инструменты
-4. Для чтения: `list_unread_chats` → `get_unread_messages` → обработка
-5. Для ответа в конкретный чат: `get_last_messages` с `chatId` (только после обработки всех непрочитанных)
+4. Для чтения: `list_unread_chats` → для каждого чата `get_unread_messages(chatId, n)` → обработка
+5. Для ответа в конкретный чат: `get_last_messages(chatId, n)` (только после обработки всех непрочитанных в этом чате)
 
 ## Тестирование
 

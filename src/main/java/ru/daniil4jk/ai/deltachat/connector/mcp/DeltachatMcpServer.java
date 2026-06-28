@@ -12,13 +12,18 @@ import ru.daniil4jk.ai.deltachat.connector.model.MessageObject;
 import ru.daniil4jk.ai.deltachat.connector.service.DeltachatService;
 import ru.daniil4jk.ai.deltachat.connector.service.UnreadMessagesExistException;
 
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 public class DeltachatMcpServer {
 
     private record ListChatsArgs(int listFlags, String query) {}
-    private record GetMessagesArgs(int n) {}
+    private record GetMessagesArgs(int chatId, int n) {}
     private record GetLastMessagesArgs(int chatId, int n) {}
     private record GetMessageArgs(int msgId) {}
     private record SendMessageArgs(int chatId, MessageData message) {}
@@ -112,7 +117,7 @@ public class DeltachatMcpServer {
                     var p = objectMapper.convertValue(args, ListChatsArgs.class);
                     List<FullChat> chats = deltachatService.listChats(p.listFlags(), p.query());
                     return new McpSchema.CallToolResult(List.of(
-                            new McpSchema.TextContent(json(chats))
+                            new McpSchema.TextContent(formatChats(chats))
                     ), false);
                 }
         );
@@ -128,7 +133,7 @@ public class DeltachatMcpServer {
                 (exchange, args) -> {
                     List<FullChat> chats = deltachatService.listUnreadChats();
                     return new McpSchema.CallToolResult(List.of(
-                            new McpSchema.TextContent(json(chats))
+                            new McpSchema.TextContent(formatUnreadChats(chats))
                     ), false);
                 }
         );
@@ -138,25 +143,29 @@ public class DeltachatMcpServer {
         return new McpServerFeatures.SyncToolSpecification(
                 new McpSchema.Tool(
                         "get_unread_messages",
-                        "Get first N unread messages (from cursor) and mark them as read",
+                        "Get first N unread messages from a specific chat and mark them read",
                         new McpSchema.JsonSchema(
                                 "object",
                                 Map.of(
+                                        "chatId", Map.of(
+                                                "type", "integer",
+                                                "description", "Chat ID"
+                                        ),
                                         "n", Map.of(
                                                 "type", "integer",
                                                 "description", "Maximum number of messages to return",
                                                 "minimum", 1
                                         )
                                 ),
-                                List.of("n"),
+                                List.of("chatId", "n"),
                                 false
                         )
                 ),
                 (exchange, args) -> {
                     var p = objectMapper.convertValue(args, GetMessagesArgs.class);
-                    List<MessageObject> msgs = deltachatService.getUnreadMessages(p.n());
+                    List<MessageObject> msgs = deltachatService.getUnreadMessages(p.chatId(), p.n());
                     return new McpSchema.CallToolResult(List.of(
-                            new McpSchema.TextContent(json(msgs))
+                            new McpSchema.TextContent(formatMessages(msgs))
                     ), false);
                 }
         );
@@ -190,7 +199,7 @@ public class DeltachatMcpServer {
                     try {
                         List<MessageObject> msgs = deltachatService.getLastMessages(p.chatId(), p.n());
                         return new McpSchema.CallToolResult(List.of(
-                                new McpSchema.TextContent(json(msgs))
+                                new McpSchema.TextContent(formatMessages(msgs))
                         ), false);
                     } catch (UnreadMessagesExistException e) {
                         return new McpSchema.CallToolResult(List.of(
@@ -225,7 +234,7 @@ public class DeltachatMcpServer {
                     var p = objectMapper.convertValue(args, GetMessageArgs.class);
                     MessageObject msg = deltachatService.getMessage(p.msgId());
                     return new McpSchema.CallToolResult(List.of(
-                            new McpSchema.TextContent(json(msg))
+                            new McpSchema.TextContent(formatMessages(List.of(msg)))
                     ), false);
                 }
         );
@@ -285,11 +294,43 @@ public class DeltachatMcpServer {
         );
     }
 
-    private String json(Object value) {
-        try {
-            return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(value);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to serialize to JSON", e);
-        }
+    private String formatMessages(List<MessageObject> msgs) {
+        if (msgs.isEmpty()) return "No messages.";
+        DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+        return msgs.stream()
+                .map(m -> {
+                    String date = Instant.ofEpochSecond(m.getTimestamp())
+                            .atZone(ZoneId.systemDefault())
+                            .format(dtf);
+                    String sender;
+                    if (m.getOverrideSenderName() != null && !m.getOverrideSenderName().isEmpty()) {
+                        sender = m.getOverrideSenderName();
+                    } else if (m.getSender() != null) {
+                        String dn = m.getSender().getDisplayName();
+                        String na = m.getSender().getNameAndAddr();
+                        sender = (dn != null && !dn.isEmpty()) ? dn : (na != null ? na : "Unknown");
+                    } else {
+                        sender = "Unknown";
+                    }
+                    String text = m.getText() != null ? m.getText().replace("\n", " ⏎ ") : "";
+                    return date + " " + sender + ": " + text;
+                })
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String formatChats(List<FullChat> chats) {
+        if (chats.isEmpty()) return "No chats.";
+        return chats.stream()
+                .sorted(Comparator.comparingInt(FullChat::getId))
+                .map(c -> "id %d - %s".formatted(c.getId(), c.getName()))
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String formatUnreadChats(List<FullChat> chats) {
+        if (chats.isEmpty()) return "No unread chats.";
+        return chats.stream()
+                .sorted(Comparator.comparingInt(FullChat::getFreshMessageCounter))
+                .map(c -> "id %d - %s - %d непрочитанных".formatted(c.getId(), c.getName(), c.getFreshMessageCounter()))
+                .collect(Collectors.joining("\n"));
     }
 }

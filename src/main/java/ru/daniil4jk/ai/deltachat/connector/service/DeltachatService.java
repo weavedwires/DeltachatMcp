@@ -14,7 +14,7 @@ public interface DeltachatService {
 
     List<FullChat> listUnreadChats();
 
-    List<MessageObject> getUnreadMessages(int n);
+    List<MessageObject> getUnreadMessages(int chatId, int n);
 
     List<MessageObject> getLastMessages(int chatId, int n);
 
