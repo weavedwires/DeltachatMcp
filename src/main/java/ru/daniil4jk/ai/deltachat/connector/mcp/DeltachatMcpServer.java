@@ -23,7 +23,7 @@ import java.util.stream.Collectors;
 public class DeltachatMcpServer {
 
     private record ListChatsArgs(int listFlags, String query) {}
-    private record GetMessagesArgs(int chatId, int n) {}
+    private record GetMessagesArgs(int chatId, int n, boolean doMarkAsRead) {}
     private record GetLastMessagesArgs(int chatId, int n) {}
     private record GetMessageArgs(int msgId) {}
     private record SendMessageArgs(int chatId, MessageData message) {}
@@ -143,7 +143,10 @@ public class DeltachatMcpServer {
         return new McpServerFeatures.SyncToolSpecification(
                 new McpSchema.Tool(
                         "get_unread_messages",
-                        "Get first N unread messages from a specific chat and mark them read",
+                        "Get up to N unread (fresh) messages from a specific chat. " +
+                                "By default does NOT mark them read — the same messages are returned on " +
+                                "every call. Set doMarkAsRead=true to mark only the returned messages as seen " +
+                                "(destructive: a later call will no longer return them).",
                         new McpSchema.JsonSchema(
                                 "object",
                                 Map.of(
@@ -155,6 +158,12 @@ public class DeltachatMcpServer {
                                                 "type", "integer",
                                                 "description", "Maximum number of messages to return",
                                                 "minimum", 1
+                                        ),
+                                        "doMarkAsRead", Map.of(
+                                                "type", "boolean",
+                                                "description", "If true, mark the returned messages as read/seen after fetching. " +
+                                                        "Default false — messages stay unread and can be re-read on a later call.",
+                                                "default", false
                                         )
                                 ),
                                 List.of("chatId", "n"),
@@ -163,7 +172,7 @@ public class DeltachatMcpServer {
                 ),
                 (exchange, args) -> {
                     var p = objectMapper.convertValue(args, GetMessagesArgs.class);
-                    List<MessageObject> msgs = deltachatService.getUnreadMessages(p.chatId(), p.n());
+                    List<MessageObject> msgs = deltachatService.getUnreadMessages(p.chatId(), p.n(), p.doMarkAsRead());
                     return new McpSchema.CallToolResult(List.of(
                             new McpSchema.TextContent(formatMessages(msgs))
                     ), false);
@@ -313,16 +322,16 @@ public class DeltachatMcpServer {
                         sender = "Unknown";
                     }
                     String text = m.getText() != null ? m.getText().replace("\n", " ⏎ ") : "";
-                    return date + " " + sender + ": " + text;
+                    return sender + " " + date + ": " + text;
                 })
-                .collect(Collectors.joining("\n"));
+                .collect(Collectors.joining("\n\n"));
     }
 
     private String formatChats(List<FullChat> chats) {
         if (chats.isEmpty()) return "No chats.";
         return chats.stream()
                 .sorted(Comparator.comparingInt(FullChat::getId))
-                .map(c -> "id %d - %s".formatted(c.getId(), c.getName()))
+                .map(c -> "%s [id %d]".formatted(c.getName(), c.getId()))
                 .collect(Collectors.joining("\n"));
     }
 
@@ -330,7 +339,8 @@ public class DeltachatMcpServer {
         if (chats.isEmpty()) return "No unread chats.";
         return chats.stream()
                 .sorted(Comparator.comparingInt(FullChat::getFreshMessageCounter))
-                .map(c -> "id %d - %s - %d непрочитанных".formatted(c.getId(), c.getName(), c.getFreshMessageCounter()))
+                .map(c -> "Чат \"%s\" с id %d имеет %d непрочитанных".formatted(
+                        c.getName(), c.getId(), c.getFreshMessageCounter()))
                 .collect(Collectors.joining("\n"));
     }
 }

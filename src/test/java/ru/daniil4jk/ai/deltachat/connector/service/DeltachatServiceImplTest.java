@@ -121,33 +121,29 @@ class DeltachatServiceImplTest {
         when(rpc.call("get_fresh_msgs", 1)).thenReturn(freshIds);
 
         var msgsMap = mapper.createObjectNode();
-        // chat 10 messages
-        var msg100 = mapper.createObjectNode();
-        msg100.put("id", 100);
-        msg100.put("chatId", 10);
-        msg100.put("text", "Hello");
-        msg100.put("viewType", "Text");
-        msg100.put("state", 10);
-        var msg101 = mapper.createObjectNode();
-        msg101.put("id", 101);
-        msg101.put("chatId", 10);
-        msg101.put("text", "World");
-        msg101.put("viewType", "Text");
-        msg101.put("state", 10);
-        // another chat message
-        var msg200 = mapper.createObjectNode();
-        msg200.put("id", 200);
-        msg200.put("chatId", 20);
-        msg200.put("text", "Other");
-        msg200.put("viewType", "Text");
-        msg200.put("state", 10);
-
+        // chat 10 messages (MessageLoadResult: internally tagged, fields inlined at top level)
         var loadResult100 = mapper.createObjectNode();
-        loadResult100.set("message", msg100);
+        loadResult100.put("kind", "message");
+        loadResult100.put("id", 100);
+        loadResult100.put("chatId", 10);
+        loadResult100.put("text", "Hello");
+        loadResult100.put("viewType", "Text");
+        loadResult100.put("state", 10);
         var loadResult101 = mapper.createObjectNode();
-        loadResult101.set("message", msg101);
+        loadResult101.put("kind", "message");
+        loadResult101.put("id", 101);
+        loadResult101.put("chatId", 10);
+        loadResult101.put("text", "World");
+        loadResult101.put("viewType", "Text");
+        loadResult101.put("state", 10);
+        // another chat message
         var loadResult200 = mapper.createObjectNode();
-        loadResult200.set("message", msg200);
+        loadResult200.put("kind", "message");
+        loadResult200.put("id", 200);
+        loadResult200.put("chatId", 20);
+        loadResult200.put("text", "Other");
+        loadResult200.put("viewType", "Text");
+        loadResult200.put("state", 10);
         msgsMap.set("100", loadResult100);
         msgsMap.set("101", loadResult101);
         msgsMap.set("200", loadResult200);
@@ -155,10 +151,37 @@ class DeltachatServiceImplTest {
         when(rpc.call("get_messages", 1, List.of(100, 101, 200))).thenReturn(msgsMap);
         when(rpc.call("markseen_msgs", 1, List.of(100, 101))).thenReturn(null);
 
-        List<MessageObject> msgs = service.getUnreadMessages(10, 10);
+        List<MessageObject> msgs = service.getUnreadMessages(10, 10, true);
         assertEquals(2, msgs.size());
         assertEquals("Hello", msgs.get(0).getText());
         assertEquals("World", msgs.get(1).getText());
+        verify(rpc).call("markseen_msgs", 1, List.of(100, 101));
+    }
+
+    @Test
+    void getUnreadMessagesDoesNotMarkSeenWhenFlagFalse() {
+        when(rpc.call("get_selected_account_id")).thenReturn(mapper.convertValue(1, JsonNode.class));
+        service.init();
+
+        var freshIds = mapper.createArrayNode();
+        freshIds.add(100);
+        when(rpc.call("get_fresh_msgs", 1)).thenReturn(freshIds);
+
+        var msgsMap = mapper.createObjectNode();
+        var loadResult100 = mapper.createObjectNode();
+        loadResult100.put("kind", "message");
+        loadResult100.put("id", 100);
+        loadResult100.put("chatId", 10);
+        loadResult100.put("text", "Hello");
+        loadResult100.put("viewType", "Text");
+        loadResult100.put("state", 10);
+        msgsMap.set("100", loadResult100);
+
+        when(rpc.call("get_messages", 1, List.of(100))).thenReturn(msgsMap);
+
+        List<MessageObject> msgs = service.getUnreadMessages(10, 10, false);
+        assertEquals(1, msgs.size());
+        verify(rpc, never()).call(eq("markseen_msgs"), anyInt(), any());
     }
 
     @Test

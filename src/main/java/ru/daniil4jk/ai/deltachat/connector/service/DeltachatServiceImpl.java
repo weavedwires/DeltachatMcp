@@ -88,7 +88,7 @@ public class DeltachatServiceImpl implements DeltachatService {
     }
 
     @Override
-    public List<MessageObject> getUnreadMessages(int chatId, int n) {
+    public List<MessageObject> getUnreadMessages(int chatId, int n, boolean doMarkAsRead) {
         checkAccount();
         // get all fresh message IDs across all chats
         JsonNode freshIds = rpc.call("get_fresh_msgs", accountId);
@@ -124,11 +124,13 @@ public class DeltachatServiceImpl implements DeltachatService {
         if (matched.isEmpty()) {
             return List.of();
         }
-        // take first n and mark them seen
+        // take first n and optionally mark them seen
         int takeCount = Math.min(n, matched.size());
         List<Integer> takeIds = matchedIds.subList(0, takeCount);
         List<MessageObject> result = matched.subList(0, takeCount);
-        rpc.call("markseen_msgs", accountId, takeIds);
+        if (doMarkAsRead) {
+            rpc.call("markseen_msgs", accountId, takeIds);
+        }
         return result;
     }
 
