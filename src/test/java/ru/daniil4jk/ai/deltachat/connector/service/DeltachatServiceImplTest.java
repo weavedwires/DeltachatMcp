@@ -200,6 +200,68 @@ class DeltachatServiceImplTest {
     }
 
     @Test
+    void getMessagesBatchThrowsOnUnread() {
+        when(rpc.call("get_selected_account_id")).thenReturn(mapper.convertValue(1, JsonNode.class));
+        service.init();
+
+        var chatNode = mapper.createObjectNode();
+        chatNode.put("id", 10);
+        chatNode.put("name", "Chat");
+        chatNode.put("freshMessageCounter", 1);
+        when(rpc.call("get_full_chat_by_id", 1, 10)).thenReturn(chatNode);
+
+        assertThrows(UnreadMessagesExistException.class,
+                () -> service.getMessagesBatch(10, 5, 0));
+    }
+
+    @Test
+    void getMessagesBatchFetchesFromOffset() {
+        when(rpc.call("get_selected_account_id")).thenReturn(mapper.convertValue(1, JsonNode.class));
+        service.init();
+
+        var chatNode = mapper.createObjectNode();
+        chatNode.put("id", 10);
+        chatNode.put("name", "Chat");
+        chatNode.put("freshMessageCounter", 0);
+        when(rpc.call("get_full_chat_by_id", 1, 10)).thenReturn(chatNode);
+
+        // 5 messages: ids sorted oldest -> newest [10, 11, 12, 13, 14]
+        var ids = mapper.createArrayNode();
+        ids.add(10);
+        ids.add(11);
+        ids.add(12);
+        ids.add(13);
+        ids.add(14);
+        when(rpc.call("get_message_ids", 1, 10, false, false)).thenReturn(ids);
+
+        var msgsMap = mapper.createObjectNode();
+        var loadResult12 = mapper.createObjectNode();
+        loadResult12.put("kind", "message");
+        loadResult12.put("id", 12);
+        loadResult12.put("chatId", 10);
+        loadResult12.put("text", "Twelve");
+        loadResult12.put("viewType", "Text");
+        loadResult12.put("state", 13);
+        var loadResult13 = mapper.createObjectNode();
+        loadResult13.put("kind", "message");
+        loadResult13.put("id", 13);
+        loadResult13.put("chatId", 10);
+        loadResult13.put("text", "Thirteen");
+        loadResult13.put("viewType", "Text");
+        loadResult13.put("state", 13);
+        msgsMap.set("12", loadResult12);
+        msgsMap.set("13", loadResult13);
+
+        // offset=2 -> skip last 2 (13,14), take 2 (11,12)
+        when(rpc.call("get_messages", 1, List.of(11, 12))).thenReturn(msgsMap);
+        when(rpc.call("markseen_msgs", 1, List.of(11, 12))).thenReturn(null);
+
+        List<MessageObject> msgs = service.getMessagesBatch(10, 2, 2);
+        assertEquals(2, msgs.size());
+        verify(rpc).call("markseen_msgs", 1, List.of(11, 12));
+    }
+
+    @Test
     void sendMessageCallsRpc() {
         when(rpc.call("get_selected_account_id")).thenReturn(mapper.convertValue(1, JsonNode.class));
         service.init();

@@ -25,6 +25,7 @@ public class DeltachatMcpServer {
     private record ListChatsArgs(int listFlags, String query) {}
     private record GetMessagesArgs(int chatId, int n, boolean doMarkAsRead) {}
     private record GetLastMessagesArgs(int chatId, int n) {}
+    private record GetMessagesBatchArgs(int chatId, int n, int offset) {}
     private record GetMessageArgs(int msgId) {}
     private record SendMessageArgs(int chatId, MessageData message) {}
     private record ImportBackupArgs(String backupPath, String passphrase) {}
@@ -51,6 +52,7 @@ public class DeltachatMcpServer {
                         toolListUnreadChats(),
                         toolGetUnreadMessages(),
                         toolGetLastMessages(),
+                        toolGetMessagesBatch(),
                         toolGetMessage(),
                         toolSendMessage()
                 );
@@ -207,6 +209,57 @@ public class DeltachatMcpServer {
                     var p = objectMapper.convertValue(args, GetLastMessagesArgs.class);
                     try {
                         List<MessageObject> msgs = deltachatService.getLastMessages(p.chatId(), p.n());
+                        return new McpSchema.CallToolResult(List.of(
+                                new McpSchema.TextContent(formatMessages(msgs))
+                        ), false);
+                    } catch (UnreadMessagesExistException e) {
+                        return new McpSchema.CallToolResult(List.of(
+                                new McpSchema.TextContent(
+                                        "Error: " + e.getMessage() +
+                                                ". Call get_unread_messages first."
+                                )
+                        ), true);
+                    }
+                }
+        );
+    }
+
+    private McpServerFeatures.SyncToolSpecification toolGetMessagesBatch() {
+        return new McpServerFeatures.SyncToolSpecification(
+                new McpSchema.Tool(
+                        "get_messages_batch",
+                        "Get a batch of messages from a chat, counted back from the last (most recent) " +
+                                "message, not by id. offset=0 returns the last n messages, offset=n returns " +
+                                "the n messages before those, etc. Marks returned messages read. " +
+                                "Throws error if there are unread messages — use get_unread_messages first.",
+                        new McpSchema.JsonSchema(
+                                "object",
+                                Map.of(
+                                        "chatId", Map.of(
+                                                "type", "integer",
+                                                "description", "Chat ID"
+                                        ),
+                                        "n", Map.of(
+                                                "type", "integer",
+                                                "description", "Number of messages to retrieve",
+                                                "minimum", 1
+                                        ),
+                                        "offset", Map.of(
+                                                "type", "integer",
+                                                "description", "How many messages to skip from the end of the chat. " +
+                                                        "0 = newest messages, n = previous n messages, etc.",
+                                                "minimum", 0,
+                                                "default", 0
+                                        )
+                                ),
+                                List.of("chatId", "n"),
+                                false
+                        )
+                ),
+                (exchange, args) -> {
+                    var p = objectMapper.convertValue(args, GetMessagesBatchArgs.class);
+                    try {
+                        List<MessageObject> msgs = deltachatService.getMessagesBatch(p.chatId(), p.n(), p.offset());
                         return new McpSchema.CallToolResult(List.of(
                                 new McpSchema.TextContent(formatMessages(msgs))
                         ), false);

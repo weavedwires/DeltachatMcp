@@ -18,6 +18,8 @@ public interface DeltachatService {
 
     List<MessageObject> getLastMessages(int chatId, int n);
 
+    List<MessageObject> getMessagesBatch(int chatId, int n, int offset);
+
     MessageObject getMessage(int msgId);
 
     int sendMessage(int chatId, MessageData msg);

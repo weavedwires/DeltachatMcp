@@ -19,10 +19,10 @@ java -jar target/deltachat-mcp.jar   # MCP client spawns this as subprocess
 
 ```
 DeltachatMcpApplication.main()
-  └─ DeltachatMcpServer          ← MCP SDK: exposes 7 tools (import_from_backup,
+  └─ DeltachatMcpServer          ← MCP SDK: exposes 8 tools (import_from_backup,
   │                                 list_chats, list_unread_chats,
   │                                 get_unread_messages, get_last_messages,
-  │                                 get_message, send_message)
+  │                                 get_messages_batch, get_message, send_message)
   └─ DeltachatServiceImpl         ← wraps DeltachatRpcClient, manages accountId
        └─ DeltachatRpcClient      ← launches deltachat-rpc-server subprocess,
                                     JSON Lines over stdin/stdout with

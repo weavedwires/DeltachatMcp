@@ -174,6 +174,45 @@ public class DeltachatServiceImpl implements DeltachatService {
     }
 
     @Override
+    public List<MessageObject> getMessagesBatch(int chatId, int n, int offset) {
+        checkAccount();
+        JsonNode chatNode = rpc.call("get_full_chat_by_id", accountId, chatId);
+        FullChat chat = mapper.convertValue(chatNode, FullChat.class);
+        if (chat.getFreshMessageCounter() > 0) {
+            throw new UnreadMessagesExistException(chatId, chat.getFreshMessageCounter());
+        }
+        JsonNode ids = rpc.call("get_message_ids", accountId, chatId, false, false);
+        if (ids == null || !ids.isArray() || ids.isEmpty()) {
+            return List.of();
+        }
+        int size = ids.size();
+        int end = size - offset;
+        if (end <= 0) {
+            return List.of();
+        }
+        int from = Math.max(0, end - n);
+        List<Integer> batchIds = new ArrayList<>();
+        for (int i = from; i < end; i++) {
+            batchIds.add(ids.get(i).asInt());
+        }
+        JsonNode msgsMap = rpc.call("get_messages", accountId, batchIds);
+        rpc.call("markseen_msgs", accountId, batchIds);
+
+        List<MessageObject> result = new ArrayList<>();
+        if (msgsMap != null && msgsMap.isObject()) {
+            var iter = msgsMap.fields();
+            while (iter.hasNext()) {
+                var entry = iter.next();
+                JsonNode loadResult = entry.getValue();
+                if (loadResult.has("kind") && "message".equals(loadResult.get("kind").asText())) {
+                    result.add(mapper.convertValue(loadResult, MessageObject.class));
+                }
+            }
+        }
+        return result;
+    }
+
+    @Override
     public MessageObject getMessage(int msgId) {
         checkAccount();
         JsonNode msg = rpc.call("get_message", accountId, msgId);

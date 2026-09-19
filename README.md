@@ -36,6 +36,7 @@ MCP-клиент (OpenCode, Claude Desktop и т.д.) запускает это�
 | `list_unread_chats` | Чаты с непрочитанными сообщениями |
 | `get_unread_messages` | Первые N непрочитанных сообщений из чата (`chatId`, `n`, помечаются прочитанными) |
 | `get_last_messages` | Последние N сообщений из чата (`chatId`, `n`); ошибка если есть непрочитанные — сперва вызвать `get_unread_messages` |
+| `get_messages_batch` | Батч сообщений с отсчётом от последнего полученного (`chatId`, `n`, `offset`); `offset=0` — последние n, `offset=n` — предыдущие n; ошибка при непрочитанных |
 | `get_message` | Сообщение по ID |
 | `send_message` | Отправка сообщения (`chatId`, `message` с полями `text`, `html`, `file`, `viewtype`, `quotedMessageId`, `overrideSenderName`, `location`) |
 
@@ -59,7 +60,7 @@ mvn clean test
 
 ```
 JAR (stdin/stdout MCP-транспорт)
-  └─ DeltachatMcpServer     ← MCP SDK, 7 tools
+  └─ DeltachatMcpServer     ← MCP SDK, 8 tools
        └─ DeltachatServiceImpl   ← бизнес-логика, accountId
             └─ DeltachatRpcClient  ← JSON Lines над stdin/stdout подпроцесса
                  └─ deltachat-rpc-server  ← Rust-демон Delta Chat
