@@ -1,6 +1,7 @@
 package ru.daniil4jk.ai.deltachat.connector.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 @Data
@@ -18,8 +19,11 @@ public class MessageObject {
     private boolean hasDeviatingTimestamp;
     private String subject;
     private boolean showPadlock;
+    @JsonProperty("isInfo")
     private boolean isInfo;
+    @JsonProperty("isForwarded")
     private boolean isForwarded;
+    @JsonProperty("isBot")
     private boolean isBot;
     private String systemMessageType;
     private Integer infoContactId;
@@ -35,6 +39,7 @@ public class MessageObject {
     private String downloadState;
     private Integer originalMsgId;
     private Integer savedMessageId;
+    @JsonProperty("isEdited")
     private boolean isEdited;
     private boolean hasLocation;
     private boolean hasHtml;

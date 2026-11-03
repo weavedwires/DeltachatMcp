@@ -69,14 +69,13 @@ class DeltachatRpcClientTest {
     void methodNotFoundReturnsError() {
         var ex = assertThrows(RuntimeException.class,
                 () -> client.call("nonexistent_method"));
-        assertTrue(ex.getMessage().contains("JSON-RPC error"));
+        assertTrue(ex.getMessage().contains("nonexistent_method"), ex.getMessage());
     }
 
     @Test
     void unknownAccountReturnsError() {
         var ex = assertThrows(RuntimeException.class,
                 () -> client.call("get_info", 99999));
-        assertTrue(ex.getMessage().contains("JSON-RPC error") ||
-                   ex.getMessage().contains("account"));
+        assertTrue(ex.getMessage().contains("get_info"), ex.getMessage());
     }
 }

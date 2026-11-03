@@ -13,9 +13,30 @@ MCP-сервер для [Delta Chat](https://delta.chat). Позволяет AI-
 ## Сборка и запуск
 
 ```bash
-mvn clean package               # сборка shaded JAR
+mvn clean package                    # сборка shaded JAR
 java -jar target/deltachat-mcp.jar   # запуск (stdin/stdout)
 ```
+
+Собирать на **JDK 21** (`maven.compiler.release=21`; Lombok 1.18.48 на JDK 25 падает
+в annotation processing):
+
+```bash
+JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 mvn clean package
+```
+
+## Устройство
+
+- **MCP** — официальный SDK `io.modelcontextprotocol.sdk:mcp-core` **2.1.0**
+  (+`mcp-json-jackson2`), сервер объявляет протокол **2025-11-25**.
+- **RPC к `deltachat-rpc-server`** — библиотека **LSP4J jsonrpc 1.0.0**: она ведёт
+  корреляцию id, разбирает ответы и ошибки, не ломается на уведомлениях сервера.
+  Ручного разбора строк и собственных `pending`-мап в коде больше нет.
+  Контракт методов — `DeltaChatApi` (нужен LSP4J, чтобы знать типы `result`).
+- **Таймауты по цепочке:** RPC-вызов 120 с (`DC_RPC_TIMEOUT_MS`) → обработка tool'а в
+  MCP 240 с (`requestTimeout`) → таймаут клиента MCP 280 с (`toolTimeout` у nanobot).
+- **Процесс:** stderr `deltachat-rpc-server` непрерывно дренится в лог (иначе 64-КиБ
+  pipe забивается и сервер намертво встаёт), при завершении процесса вызов падает
+  сразу с понятной ошибкой вместо ожидания таймаута.
 
 MCP-клиент (OpenCode, Claude Desktop и т.д.) запускает этот JAR как подпроцесс.
 
@@ -24,6 +45,7 @@ MCP-клиент (OpenCode, Claude Desktop и т.д.) запускает это�
 | Параметр | Переменная окружения | System property | По умолчанию |
 |---|---|---|---|
 | Директория аккаунтов | `DC_ACCOUNTS_PATH` | `deltachat.accountsPath` | `./accounts` |
+| Таймаут одного RPC-вызова | `DC_RPC_TIMEOUT_MS` | `deltachat.rpcTimeoutMs` | `120000` |
 
 > **Важно:** 🔒 Если на машине уже запущен другой процесс Delta Chat (например, реактивный бот), он держит блокировку `accounts.lock` в стандартной директории. **Всегда задавайте `DC_ACCOUNTS_PATH`** в отдельную директорию для MCP-сервера — иначе сервер упадёт с ошибкой блокировки.
 

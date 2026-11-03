@@ -18,13 +18,14 @@ public class DeltachatMcpApplication {
 
         var rpcClient = new DeltachatRpcClient(objectMapper);
         rpcClient.start();
+        Runtime.getRuntime().addShutdownHook(new Thread(rpcClient::close, "dc-rpc-shutdown"));
 
         var service = new DeltachatServiceImpl(rpcClient, objectMapper);
         service.init();
 
         log.info("Starting MCP server (stdio transport)");
         var server = new DeltachatMcpServer(service, objectMapper);
-        server.create().build();
+        server.create();
 
         new CountDownLatch(1).await();
     }

@@ -11,12 +11,19 @@ import ru.daniil4jk.ai.deltachat.connector.model.MessageObject;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 
 public class DeltachatServiceImpl implements DeltachatService {
 
     private static final Logger log = LoggerFactory.getLogger(DeltachatServiceImpl.class);
+
+    /** dc_msg_state: 10 = InFresh (не прочитано и не показано), 13 = InNoticed (показано, но не открыто). */
+    private static final int STATE_IN_FRESH = 10;
+    private static final int STATE_IN_NOTICED = 13;
+    /** Сколько сообщений подтягивать за один батч при сканировании непрочитанных. */
+    private static final int UNREAD_SCAN_CHUNK = 200;
 
     private final DeltachatRpcClient rpc;
     private final ObjectMapper mapper;
@@ -71,9 +78,7 @@ public class DeltachatServiceImpl implements DeltachatService {
         List<FullChat> result = new ArrayList<>();
         if (ids != null && ids.isArray()) {
             for (JsonNode idNode : ids) {
-                int chatId = idNode.asInt();
-                JsonNode chat = rpc.call("get_full_chat_by_id", accountId, chatId);
-                result.add(mapper.convertValue(chat, FullChat.class));
+                result.add(fullChat(idNode.asInt()));
             }
         }
         return result;
@@ -87,128 +92,110 @@ public class DeltachatServiceImpl implements DeltachatService {
                 .toList();
     }
 
+    /**
+     * Непрочитанные сообщения чата.
+     * <p>
+     * Раньше здесь использовался {@code get_fresh_msgs} — но это API для уведомлений и бейджей:
+     * ядро (chatmail/core, src/context.rs) отдаёт только сообщения не заблокированных и
+     * <b>не заглушённых</b> чатов ({@code AND NOT(c.muted_until=-1 OR c.muted_until>now)}), тогда как
+     * счётчик {@code freshMessageCounter} (src/chat.rs) считает все сообщения в состоянии
+     * InFresh в чате, независимо от mute. Отсюда и был разрыв: в заглушённом чате счётчик > 0,
+     * а {@code get_fresh_msgs} возвращает пустой список → «No messages».
+     * <p>
+     * Теперь непрочитанные определяются по самому сообщению ({@code state} = InFresh/InNoticed),
+     * поэтому режим «не беспокоить» больше не скрывает переписку.
+     *
+     * @return до {@code n} сообщений, от старых к новым
+     */
     @Override
     public List<MessageObject> getUnreadMessages(int chatId, int n, boolean doMarkAsRead) {
         checkAccount();
-        // get all fresh message IDs across all chats
-        JsonNode freshIds = rpc.call("get_fresh_msgs", accountId);
-        if (freshIds == null || !freshIds.isArray() || freshIds.isEmpty()) {
+        FullChat chat = fullChat(chatId);
+        int unreadCount = chat.getFreshMessageCounter();
+        if (unreadCount <= 0) {
             return List.of();
         }
-        // fetch all fresh messages in one batch
-        List<Integer> allFreshIds = new ArrayList<>();
-        for (JsonNode idNode : freshIds) {
-            allFreshIds.add(idNode.asInt());
+        List<Integer> allIds = messageIds(chatId);
+        if (allIds.isEmpty()) {
+            return List.of();
         }
-        JsonNode msgsMap = rpc.call("get_messages", accountId, allFreshIds);
 
-        // filter by chatId, collect matching IDs and messages
-        List<Integer> matchedIds = new ArrayList<>();
-        List<MessageObject> matched = new ArrayList<>();
-        if (msgsMap != null && msgsMap.isObject()) {
-            var iter = msgsMap.fields();
-            while (iter.hasNext()) {
-                var entry = iter.next();
-                JsonNode loadResult = entry.getValue();
-                // MessageLoadResult is an internally-tagged enum with inlined fields:
-                // {"kind": "message", "id": ..., "chatId": ..., ...}
-                // — no "message" wrapper, fields are at the top level of loadResult
-                if (loadResult.has("kind") && "message".equals(loadResult.get("kind").asText())
-                        && loadResult.has("chatId")
-                        && loadResult.get("chatId").asInt() == chatId) {
-                    matched.add(mapper.convertValue(loadResult, MessageObject.class));
-                    matchedIds.add(Integer.parseInt(entry.getKey()));
+        int limit = Math.max(1, n);
+        int window = Math.max(unreadCount, limit);
+        List<MessageObject> collected = new ArrayList<>(); // от старых к новым
+        Set<Integer> seen = new HashSet<>();
+        int scanned = 0;
+        int end = allIds.size();
+
+        while (end > 0 && collected.size() < limit && scanned < window) {
+            int start = Math.max(0, end - UNREAD_SCAN_CHUNK);
+            List<Integer> chunk = allIds.subList(start, end);
+            List<MessageObject> chunkUnread = new ArrayList<>();
+            for (MessageObject msg : messages(chunk)) {
+                if (isUnread(msg) && seen.add(msg.getId())) {
+                    chunkUnread.add(msg);
                 }
             }
+            collected.addAll(0, chunkUnread);
+            scanned += chunk.size();
+            end = start;
         }
-        if (matched.isEmpty()) {
+
+        if (collected.isEmpty()) {
+            log.debug("Chat {} reports {} unread but no message has an unread state", chatId, unreadCount);
             return List.of();
         }
-        // take first n and optionally mark them seen
-        int takeCount = Math.min(n, matched.size());
-        List<Integer> takeIds = matchedIds.subList(0, takeCount);
-        List<MessageObject> result = matched.subList(0, takeCount);
+        List<MessageObject> result = collected.size() > limit
+                ? new ArrayList<>(collected.subList(0, limit))
+                : collected;
+
         if (doMarkAsRead) {
-            rpc.call("markseen_msgs", accountId, takeIds);
+            rpc.call("markseen_msgs", accountId, result.stream().map(MessageObject::getId).toList());
         }
         return result;
+    }
+
+    private boolean isUnread(MessageObject msg) {
+        return msg.getState() == STATE_IN_FRESH || msg.getState() == STATE_IN_NOTICED;
     }
 
     @Override
     public List<MessageObject> getLastMessages(int chatId, int n) {
         checkAccount();
-        // check for unread
-        JsonNode chatNode = rpc.call("get_full_chat_by_id", accountId, chatId);
-        FullChat chat = mapper.convertValue(chatNode, FullChat.class);
+        FullChat chat = fullChat(chatId);
         if (chat.getFreshMessageCounter() > 0) {
             throw new UnreadMessagesExistException(chatId, chat.getFreshMessageCounter());
         }
-        // get all message IDs for the chat
-        JsonNode ids = rpc.call("get_message_ids", accountId, chatId, false, false);
-        if (ids == null || !ids.isArray() || ids.isEmpty()) {
+        List<Integer> ids = messageIds(chatId);
+        if (ids.isEmpty()) {
             return List.of();
         }
-        int size = ids.size();
-        int from = Math.max(0, size - n);
-        List<Integer> lastIds = new ArrayList<>();
-        for (int i = from; i < size; i++) {
-            lastIds.add(ids.get(i).asInt());
-        }
-        // batch fetch
-        JsonNode msgsMap = rpc.call("get_messages", accountId, lastIds);
+        int from = Math.max(0, ids.size() - n);
+        List<Integer> lastIds = ids.subList(from, ids.size());
+        List<MessageObject> result = messages(lastIds);
         rpc.call("markseen_msgs", accountId, lastIds);
-
-        List<MessageObject> result = new ArrayList<>();
-        if (msgsMap != null && msgsMap.isObject()) {
-            var iter = msgsMap.fields();
-            while (iter.hasNext()) {
-                var entry = iter.next();
-                JsonNode loadResult = entry.getValue();
-                // MessageLoadResult internally tagged: {"kind": "message", ...}
-                if (loadResult.has("kind") && "message".equals(loadResult.get("kind").asText())) {
-                    result.add(mapper.convertValue(loadResult, MessageObject.class));
-                }
-            }
-        }
         return result;
     }
 
     @Override
     public List<MessageObject> getMessagesBatch(int chatId, int n, int offset) {
         checkAccount();
-        JsonNode chatNode = rpc.call("get_full_chat_by_id", accountId, chatId);
-        FullChat chat = mapper.convertValue(chatNode, FullChat.class);
+        FullChat chat = fullChat(chatId);
         if (chat.getFreshMessageCounter() > 0) {
             throw new UnreadMessagesExistException(chatId, chat.getFreshMessageCounter());
         }
-        JsonNode ids = rpc.call("get_message_ids", accountId, chatId, false, false);
-        if (ids == null || !ids.isArray() || ids.isEmpty()) {
+        List<Integer> ids = messageIds(chatId);
+        if (ids.isEmpty()) {
             return List.of();
         }
-        int size = ids.size();
-        int end = size - offset;
+        int end = ids.size() - offset;
         if (end <= 0) {
             return List.of();
         }
         int from = Math.max(0, end - n);
-        List<Integer> batchIds = new ArrayList<>();
-        for (int i = from; i < end; i++) {
-            batchIds.add(ids.get(i).asInt());
-        }
-        JsonNode msgsMap = rpc.call("get_messages", accountId, batchIds);
+        List<Integer> batchIds = ids.subList(from, end);
+        List<MessageObject> result = messages(batchIds);
         rpc.call("markseen_msgs", accountId, batchIds);
-
-        List<MessageObject> result = new ArrayList<>();
-        if (msgsMap != null && msgsMap.isObject()) {
-            var iter = msgsMap.fields();
-            while (iter.hasNext()) {
-                var entry = iter.next();
-                JsonNode loadResult = entry.getValue();
-                if (loadResult.has("kind") && "message".equals(loadResult.get("kind").asText())) {
-                    result.add(mapper.convertValue(loadResult, MessageObject.class));
-                }
-            }
-        }
         return result;
     }
 
@@ -224,6 +211,46 @@ public class DeltachatServiceImpl implements DeltachatService {
         checkAccount();
         JsonNode result = rpc.call("send_msg", accountId, chatId, msg);
         return result.asInt();
+    }
+
+    // ---- helpers ----
+
+    private FullChat fullChat(int chatId) {
+        JsonNode node = rpc.call("get_full_chat_by_id", accountId, chatId);
+        return mapper.convertValue(node, FullChat.class);
+    }
+
+    /** Все id сообщений чата, от старых к новым. */
+    private List<Integer> messageIds(int chatId) {
+        JsonNode ids = rpc.call("get_message_ids", accountId, chatId, false, false);
+        List<Integer> result = new ArrayList<>();
+        if (ids != null && ids.isArray()) {
+            for (JsonNode idNode : ids) {
+                result.add(idNode.asInt());
+            }
+        }
+        return result;
+    }
+
+    /** Батч-получение сообщений в том же порядке, в котором переданы id. */
+    private List<MessageObject> messages(List<Integer> ids) {
+        if (ids.isEmpty()) return List.of();
+        JsonNode msgsMap = rpc.call("get_messages", accountId, List.copyOf(ids));
+        List<MessageObject> result = new ArrayList<>();
+        if (msgsMap == null || !msgsMap.isObject()) {
+            return result;
+        }
+        for (Integer id : ids) {
+            JsonNode loadResult = msgsMap.get(String.valueOf(id));
+            if (loadResult == null) continue;
+            // MessageLoadResult — internally tagged enum: {"kind":"message", ...} | {"kind":"loadingError", ...}
+            if (loadResult.hasNonNull("kind") && "message".equals(loadResult.get("kind").asText())) {
+                result.add(mapper.convertValue(loadResult, MessageObject.class));
+            } else {
+                log.debug("Message {} not loaded: {}", id, loadResult);
+            }
+        }
+        return result;
     }
 
     private void checkAccount() {
